@@ -1,8 +1,10 @@
-# Configuración ZED-F9P para Moving-Base RTK (MB-RTK)
+# ZED-F9P Moving-Base RTK Configuration
 
-Este repo contiene utilidades para configurar dos receptores u-blox ZED-F9P en modo **Moving-Base RTK**, donde ambos receptores están en movimiento y se obtiene posición relativa (heading/baseline) entre ellos.
+Automated configuration tools for u-blox ZED-F9P dual-receiver Moving-Base RTK architecture. Implements high-precision relative positioning between two mobile GNSS units using RTCM3 corrections and NTRIP services, computing real-time heading and baseline for autonomous navigation and robotics applications.
 
-## Arquitectura MB-RTK
+**Tested:** Ubuntu 20.04 LTS · ROS Noetic · ZED-F9P Firmware 1.51
+
+## Moving-Base RTK Architecture
 
 ```
                     ┌─────────────────┐
@@ -23,106 +25,106 @@ Este repo contiene utilidades para configurar dos receptores u-blox ZED-F9P en m
                     └─────────────────┘
 ```
 
-### Roles
+### Receiver Roles
 
-| Receptor | Puerto | Función |
+| Receiver | Port | Function |
 |----------|--------|---------|
-| **Moving Base (MB)** | `/dev/ttyACM0` | Recibe NTRIP por USB (mejora posición absoluta). Emite RTCM por UART2 TX hacia el Rover. Publica `NAV-PVT`. |
-| **Rover (RV)** | `/dev/ttyACM1` | Recibe RTCM por UART2 RX desde la MB. Publica `NAV-PVT` y `NAV-RELPOSNED` (heading y baseline). |
+| **Moving Base (MB)** | `/dev/ttyACM0` | Receives NTRIP corrections via USB to improve absolute position. Transmits RTCM corrections via UART2 TX to Rover. Publishes `NAV-PVT`. |
+| **Rover (RV)** | `/dev/ttyACM1` | Receives RTCM corrections via UART2 RX from Moving Base. Publishes `NAV-PVT` and `NAV-RELPOSNED` (heading and baseline). |
 
-### Configuración aplicada por el script
+### Configuration Applied by Script
 
-| Parámetro | Moving Base | Rover |
+| Parameter | Moving Base | Rover |
 |-----------|-------------|-------|
-| TMODE3 | Disabled (móvil) | Disabled (móvil) |
-| Tasa navegación | 5 Hz (200 ms) | 5 Hz (200 ms) |
-| UART2 baudrate | 460800 | 460800 |
-| UART2 RTCM | OUT (hacia Rover) | IN (desde MB) |
-| USB RTCM | IN (NTRIP) | Deshabilitado |
+| TMODE3 | Disabled (mobile) | Disabled (mobile) |
+| Navigation Rate | 5 Hz (200 ms) | 5 Hz (200 ms) |
+| UART2 Baudrate | 460800 | 460800 |
+| UART2 RTCM | OUT (to Rover) | IN (from MB) |
+| USB RTCM | IN (NTRIP) | Disabled |
 | USB UBX | NAV-PVT | NAV-PVT, NAV-RELPOSNED |
-| RTCM emitidos | 4072.0, 1074, 1084, 1094, 1124, 1230 | — |
+| RTCM Messages | 4072.0, 1074, 1084, 1094, 1124, 1230 | — |
 
-## Requisitos
+## Requirements
 
-- Acceso a `/dev/ttyACM0` y `/dev/ttyACM1` para ambos receptores.
-- `ubxtool` ≥ 3.2 en el `PATH` (viene con `gpsd-py3`):
+- Access to `/dev/ttyACM0` and `/dev/ttyACM1` for both receivers.
+- `ubxtool` >= 3.2 in `PATH` (included in `gpsd-py3` package):
   ```bash
   pip install gpsd-py3
   ```
-- Opcional: desactivar servicios que puedan tomar los puertos:
+- Optional: disable services that may block serial ports:
   ```bash
   sudo systemctl stop gpsd.socket gpsd
   sudo systemctl stop ModemManager
   ```
-- Python 3 disponible en el sistema.
+- Python 3 available on the system.
 
-## Uso rápido
+## Quick Start
 
-### 1. Configurar los receptores
+### 1. Configure Receivers
 
 ```bash
 cd gps-config
 python configure_f9p_ubxtool.py
 ```
 
-El script:
-1. Autodetecta los puertos (ACM0 → MB, ACM1 → Rover).
-2. Configura ambos receptores vía `ubxtool`.
-3. Guarda la configuración en flash.
+The script will:
+1. Auto-detect ports (ACM0 → MB, ACM1 → Rover).
+2. Configure both receivers via `ubxtool`.
+3. Save configuration to flash memory.
 
-Salida esperada:
+Expected output:
 ```
-[HH:MM:SS] Asignación automática: MB (moving base)=/dev/ttyACM0  RV (rover)=/dev/ttyACM1
+[HH:MM:SS] Auto-assignment: MB (moving base)=/dev/ttyACM0  RV (rover)=/dev/ttyACM1
 ...
 [HH:MM:SS] Moving Base: /dev/ttyACM0 (UART2 TX → Rover, USB ← NTRIP)
 [HH:MM:SS] Rover:       /dev/ttyACM1 (UART2 RX ← MB, USB → RELPOSNED)
-[HH:MM:SS] Configuración finalizada correctamente.
+[HH:MM:SS] Configuration completed successfully.
 ```
 
-### 2. Conectar hardware UART2
+### 2. Connect UART2 Hardware
 
-Conectar físicamente:
+Physical connections:
 - **MB UART2 TX** → **Rover UART2 RX**
-- (Opcional) **MB UART2 RX** ← **Rover UART2 TX** (no usado actualmente)
-- **GND** común entre ambos
+- (Optional) **MB UART2 RX** ← **Rover UART2 TX** (not currently used)
+- Common **GND** between both units
 
-### 3. Lanzar ROS
+### 3. Launch ROS
 
 ```bash
 roslaunch gps gps.launch
 ```
 
-Topics publicados:
-- `/ublox_moving_base/navpvt` — Posición de la MB (mejorada por NTRIP).
-- `/ublox_rover/navpvt` — Posición del Rover.
-- `/ublox_rover/navheading` — Heading calculado desde RELPOSNED.
-- `/ublox_rover/navrelposned` — Posición relativa Rover→MB (baseline).
+Published topics:
+- `/ublox_moving_base/navpvt` — Moving Base position (improved by NTRIP).
+- `/ublox_rover/navpvt` — Rover position.
+- `/ublox_rover/navheading` — Heading computed from RELPOSNED.
+- `/ublox_rover/navrelposned` — Relative position Rover→MB (baseline).
 
-## Archivos de configuración ROS
+## ROS Configuration Files
 
-| Archivo | Descripción |
+| File | Description |
 |---------|-------------|
-| `gps/config/zed_f9p_primary.yaml` | Config para Moving Base |
-| `gps/config/zed_f9p_moving.yaml` | Config para Rover |
-| `gps/launch/ntrip.launch` | Launch con NTRIP + ambos receptores |
-| `gps/config/ekf_ardusimple.yaml` | EKF usando topics del Rover |
+| `gps/config/zed_f9p_primary.yaml` | Moving Base configuration |
+| `gps/config/zed_f9p_moving.yaml` | Rover configuration |
+| `gps/launch/ntrip.launch` | Launch file with NTRIP + both receivers |
+| `gps/config/ekf_ardusimple.yaml` | EKF using Rover topics |
 
-## Scripts en progreso (no recomendados)
+## Work-in-Progress Scripts (Not Recommended)nded)
 
-- `configure_f9p.py`: intento de configuración directa vía `pyubx2`/`pyserial`; en desarrollo.
-- `configure_f9p.sh`: borrador inicial para pruebas con `ubxtool`.
+- `configure_f9p.py`: Direct configuration attempt via `pyubx2`/`pyserial`; in development.
+- `configure_f9p.sh`: Initial draft for quick tests with `ubxtool`.
 
 ## Troubleshooting
 
-| Problema | Solución |
+| Issue | Solution |
 |----------|----------|
-| Script no detecta puertos | `sudo systemctl stop gpsd.socket gpsd ModemManager` |
-| "HPG Ref nav_rate should be 1 Hz" | Ya manejado en YAML con `meas_rate`/`nav_rate` |
-| NTRIP checksum mismatch | Normal durante arranque; esperar estabilización |
-| No hay heading/RELPOSNED | Verificar conexión UART2 MB→Rover |
-| `ubxtool -p MON-VER` no responde | Desconectar cable USB del receptor problemático, esperar 5 segundos, reconectar |
-| "Failed to poll MonVER" en ROS | Receptor en estado corrupto; aplicar reset físico USB (desconectar/reconectar) |
+| Script does not detect ports | `sudo systemctl stop gpsd.socket gpsd ModemManager` |
+| "HPG Ref nav_rate should be 1 Hz" | Already handled in YAML with `meas_rate`/`nav_rate` |
+| NTRIP checksum mismatch | Normal during startup; wait for stabilization |
+| No heading/RELPOSNED output | Verify UART2 connection MB→Rover |
+| `ubxtool -p MON-VER` does not respond | Disconnect USB cable from problematic receiver, wait 5 seconds, reconnect |
+| "Failed to poll MonVER" in ROS | Receiver in corrupted state; apply physical USB reset (disconnect/reconnect) |
 
-## Referencias
+## References
 
 - [ZED-F9P Integration Manual](https://content.u-blox.com/sites/default/files/ZED-F9P_IntegrationManual_UBX-18010802.pdf)

@@ -3,12 +3,19 @@
 
 
 """
-Configurador ZED-F9P (PR/MB) con autodetección (ACM0/ACM1) y configuración vía ubxtool.
+Configurador ZED-F9P para Moving-Base RTK (MB-RTK) con autodetección.
 
-- Autodetección: escanea /dev/ttyACM0 y /dev/ttyACM1, asigna PR al primero que responde y MB al segundo.
-- Configura PR para recibir NTRIP (RTCM) por USB y enviar RTCM por UART2 TX a MB.
-- Configura MB para recibir RTCM por UART2 RX, enviar NMEA+UBX por USB, PPS invertido, y transmitir VTG por UART1 TX a 1Hz, navegación a 5Hz.
-- Requiere ubxtool >= 3.2 instalado y en PATH.
+Arquitectura MB-RTK correcta (según Integration Manual F9P):
+- MOVING BASE (MB): emite RTCM (4072.0 + MSM + 1230) por UART2 TX hacia el Rover.
+                    Opcionalmente recibe NTRIP por USB para mejorar su posición absoluta.
+- ROVER (RV):       recibe RTCM por UART2 RX desde la MB.
+                    Publica UBX-NAV-RELPOSNED (heading/baseline) por USB.
+                    NO recibe NTRIP directo; solo correcciones de la MB.
+
+Autodetección: escanea /dev/ttyACM0 y /dev/ttyACM1.
+               Asigna MB al primero que responde, RV al segundo.
+
+Requiere ubxtool >= 3.2 instalado y en PATH.
 """
 
 from __future__ import annotations
@@ -26,7 +33,8 @@ import subprocess
 # PARÁMETROS
 # ------------------------------------------------------------
 CANDIDATE_PORTS = ("/dev/ttyACM0", "/dev/ttyACM1")
-MB_UART1_BAUD = 115200
+UART2_BAUD = 460800  # Enlace MB ↔ Rover
+ROVER_UART1_BAUD = 115200
 
 # ------------------------------------------------------------
 
@@ -235,9 +243,9 @@ def autodetect_ports() -> tuple[str, str]:
         log("  - ubxtool no está en PATH o no funciona correctamente")
         log("  - Timeout insuficiente o problemas de comunicación")
         sys.exit(1)
-    pr_port, mb_port = responding[0], responding[1]
-    log(f"\nAsignación automática: PR={pr_port}  MB={mb_port}")
-    return pr_port, mb_port
+    mb_port, rv_port = responding[0], responding[1]
+    log(f"\nAsignación automática: MB (moving base)={mb_port}  RV (rover)={rv_port}")
+    return mb_port, rv_port
 
 # ------------------------------------------------------------
 
@@ -249,19 +257,34 @@ def run_ubxtool(args, port):
     log(f"[DEBUG] STDOUT: {result.stdout.decode(errors='ignore').strip()}")
     log(f"[DEBUG] STDERR: {result.stderr.decode(errors='ignore').strip()}")
 
-def configure_pr(port: str):
-    log(f"\nConfigurando PR en {port}")
+
+def configure_moving_base(port: str):
+    """
+    Configura la Moving Base (MB):
+    - TMODE3 desactivado (móvil).
+    - Recibe NTRIP (RTCM) por USB para mejorar posición absoluta.
+    - Emite RTCM (4072.0 + MSM + 1230) por UART2 TX hacia el Rover.
+    - Publica UBX-NAV-PVT por USB.
+    """
+    log(f"\n=== Configurando MOVING BASE en {port} ===")
     
-    # Configurar tasa de navegación y medición a 5Hz (200ms)
-    run_ubxtool(["-z", "CFG-RATE-MEAS,200"], port)  # medición cada 200ms = 5Hz
-    run_ubxtool(["-z", "CFG-RATE-NAV,1"], port)     # 1 solución por medición
+    # Verificar que el puerto responde antes de configurar
+    log("Verificando comunicación...")
+    run_ubxtool(["-p", "MON-VER"], port)
     
-    # UART2: baudrate 460800, protocolo RTCM out
-    run_ubxtool(["-z", "CFG-UART2-BAUDRATE,460800"], port)
+    # TMODE3 desactivado (modo móvil, no survey-in ni fixed)
+    run_ubxtool(["-z", "CFG-TMODE-MODE,0"], port)
+    
+    # Tasa de navegación/medición a 5Hz (200ms)
+    run_ubxtool(["-z", "CFG-RATE-MEAS,200"], port)
+    run_ubxtool(["-z", "CFG-RATE-NAV,1"], port)
+    
+    # UART2: baudrate 460800, RTCM OUT hacia Rover (no recibe RTCM por UART2)
+    run_ubxtool(["-z", f"CFG-UART2-BAUDRATE,{UART2_BAUD}"], port)
     run_ubxtool(["-z", "CFG-UART2OUTPROT-RTCM3X,1"], port)
     run_ubxtool(["-z", "CFG-UART2INPROT-RTCM3X,0"], port)
     
-    # USB: entrada RTCM, salida solo UBX (sin NMEA para limpiar la vista)
+    # USB: entrada RTCM (NTRIP), salida UBX (sin NMEA)
     run_ubxtool(["-z", "CFG-USBINPROT-RTCM3X,1"], port)
     run_ubxtool(["-z", "CFG-USBOUTPROT-UBX,1"], port)
     run_ubxtool(["-z", "CFG-USBOUTPROT-NMEA,0"], port)
@@ -275,39 +298,55 @@ def configure_pr(port: str):
     ]:
         run_ubxtool(["-z", f"{msg},0"], port)
     
-    # Habilitar UBX-NAV-PVT a 5Hz por USB
-    run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_PVT_USB,5"], port)
+    # Habilitar UBX-NAV-PVT por USB (para NTRIP NMEA y monitoreo)
+    run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_PVT_USB,1"], port)
     
-    # RTCM 4072.0: Reference station PVT (requerido en cada época)
+    # --- RTCM por UART2 hacia el Rover ---
+    # RTCM 4072.0: Reference station PVT (requerido cada época para MB-RTK)
     run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE4072_0_UART2,1"], port)
     
-    # RTCM MSM7: Observaciones de todas las constelaciones
-    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1077_UART2,1"], port)  # GPS MSM7
-    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1087_UART2,1"], port)  # GLONASS MSM7
-    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1097_UART2,1"], port)  # Galileo MSM7
-    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1127_UART2,1"], port)  # BeiDou MSM7
+    # RTCM MSM4 (más liviano que MSM7, suficiente para baseline corta)
+    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1074_UART2,1"], port)  # GPS MSM4
+    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1084_UART2,1"], port)  # GLONASS MSM4
+    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1094_UART2,1"], port)  # Galileo MSM4
+    run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1124_UART2,1"], port)  # BeiDou MSM4
     
-    # RTCM 1230: GLONASS code-phase biases (requerido si se usa GLONASS)
+    # RTCM 1230: GLONASS code-phase biases (requerido si GLONASS activo)
     run_ubxtool(["-z", "CFG-MSGOUT-RTCM_3X_TYPE1230_UART2,1"], port)
     
     # Guardar configuración
     run_ubxtool(["-p", "SAVE"], port)
-    log("PR configurado")
+    log("Moving Base configurada correctamente")
 
-def configure_mb(port: str):
-    log(f"\nConfigurando MB en {port}")
+
+def configure_rover(port: str):
+    """
+    Configura el Rover (RV):
+    - TMODE3 desactivado (móvil).
+    - Recibe RTCM por UART2 RX desde la Moving Base.
+    - Publica UBX-NAV-PVT y UBX-NAV-RELPOSNED (heading/baseline) por USB.
+    - NO recibe NTRIP directo; solo correcciones de la MB.
+    """
+    log(f"\n=== Configurando ROVER en {port} ===")
     
-    # Configurar tasa de navegación y medición a 5Hz (200ms) - debe coincidir con PR
-    run_ubxtool(["-z", "CFG-RATE-MEAS,200"], port)  # medición cada 200ms = 5Hz
-    run_ubxtool(["-z", "CFG-RATE-NAV,1"], port)     # 1 solución por medición
+    # Verificar que el puerto responde antes de configurar
+    log("Verificando comunicación...")
+    run_ubxtool(["-p", "MON-VER"], port)
     
-    # UART2: baudrate 460800, entrada RTCM
-    run_ubxtool(["-z", "CFG-UART2-BAUDRATE,460800"], port)
+    # TMODE3 desactivado (modo móvil)
+    run_ubxtool(["-z", "CFG-TMODE-MODE,0"], port)
+    
+    # Tasa de navegación/medición a 5Hz (200ms) - debe coincidir con MB
+    run_ubxtool(["-z", "CFG-RATE-MEAS,200"], port)
+    run_ubxtool(["-z", "CFG-RATE-NAV,1"], port)
+    
+    # UART2: baudrate 460800, RTCM IN desde MB (no emite RTCM)
+    run_ubxtool(["-z", f"CFG-UART2-BAUDRATE,{UART2_BAUD}"], port)
     run_ubxtool(["-z", "CFG-UART2INPROT-RTCM3X,1"], port)
     run_ubxtool(["-z", "CFG-UART2OUTPROT-RTCM3X,0"], port)
     
-    # UART1: deshabilitar NMEA (para limpiar salida)
-    run_ubxtool(["-z", f"CFG-UART1-BAUDRATE,{MB_UART1_BAUD}"], port)
+    # UART1: deshabilitado para limpiar salida
+    run_ubxtool(["-z", f"CFG-UART1-BAUDRATE,{ROVER_UART1_BAUD}"], port)
     run_ubxtool(["-z", "CFG-UART1OUTPROT-NMEA,0"], port)
     for msg in [
         "CFG-MSGOUT-NMEA_ID_VTG_UART1", "CFG-MSGOUT-NMEA_ID_GGA_UART1",
@@ -317,7 +356,8 @@ def configure_mb(port: str):
     ]:
         run_ubxtool(["-z", f"{msg},0"], port)
 
-    # USB: salida solo UBX (sin NMEA)
+    # USB: salida UBX (sin NMEA), sin entrada RTCM (viene por UART2)
+    run_ubxtool(["-z", "CFG-USBINPROT-RTCM3X,0"], port)
     run_ubxtool(["-z", "CFG-USBOUTPROT-UBX,1"], port)
     run_ubxtool(["-z", "CFG-USBOUTPROT-NMEA,0"], port)
     for msg in [
@@ -328,21 +368,19 @@ def configure_mb(port: str):
     ]:
         run_ubxtool(["-z", f"{msg},0"], port)
     
-    # Habilitar UBX-NAV-PVT a 5Hz por USB
-    run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_PVT_USB,5"], port)
+    # Habilitar UBX-NAV-PVT por USB
+    run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_PVT_USB,1"], port)
     
-    # Habilitar UBX-NAV-RELPOSNED a 5Hz por USB
-    run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_RELPOSNED_USB,5"], port)
+    # Habilitar UBX-NAV-RELPOSNED por USB (heading y baseline)
+    run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_RELPOSNED_USB,1"], port)
     
     # PPS invertido (polarity=1) y habilitar TP1
     run_ubxtool(["-z", "CFG-TP-TP1_ENA,1"], port)
     run_ubxtool(["-z", "CFG-TP-POL_TP1,1"], port)
-    # Refuerza con preset CFG-TP5: tpIdx=0, polarity=1
-    run_ubxtool(["-p", "CFG-TP5,,,,,,,,,,,polarity=1"], port)
     
     # Guardar configuración
     run_ubxtool(["-p", "SAVE"], port)
-    log("MB configurado")
+    log("Rover configurado correctamente")
 
 # ------------------------------------------------------------
 # BANNER VERSIONES
@@ -363,10 +401,19 @@ def print_versions():
 
 def main():
     print_versions()
-    log("=== CONFIGURACIÓN COMPLETA ZED-F9P ===")
-    PR_PORT, MB_PORT = autodetect_ports()
-    configure_pr(PR_PORT)
-    configure_mb(MB_PORT)
+    log("=== CONFIGURACIÓN MB-RTK ZED-F9P ===")
+    log("Arquitectura: Moving Base (MB) → RTCM → Rover (RV)")
+    log("  MB: emite RTCM, recibe NTRIP (opcional), publica NAV-PVT")
+    log("  RV: recibe RTCM de MB, publica NAV-RELPOSNED (heading/baseline)")
+    log("")
+    
+    MB_PORT, RV_PORT = autodetect_ports()
+    configure_moving_base(MB_PORT)
+    configure_rover(RV_PORT)
+    
+    log("\n=== RESUMEN ===")
+    log(f"Moving Base: {MB_PORT} (UART2 TX → Rover, USB ← NTRIP)")
+    log(f"Rover:       {RV_PORT} (UART2 RX ← MB, USB → RELPOSNED)")
     log("\nConfiguración finalizada correctamente.")
 
 if __name__ == "__main__":

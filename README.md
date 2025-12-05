@@ -47,9 +47,9 @@ Automated configuration tools for u-blox ZED-F9P dual-receiver Moving-Base RTK a
 ## Requirements
 
 - Access to `/dev/ttyACM0` and `/dev/ttyACM1` for both receivers.
-- `ubxtool` >= 3.2 in `PATH` (included in `gpsd-py3` package):
+- `ubxtool` >= 3.2 in `PATH` (tested with v3.2, other versions may work but YMMV):
   ```bash
-  pip install gpsd-py3
+  sudo apt install gpsd-clients  # provides ubxtool
   ```
 - Optional: disable services that may block serial ports:
   ```bash

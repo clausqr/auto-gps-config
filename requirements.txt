@@ -1,0 +1,7 @@
+# No Python package dependencies required
+# configure_f9p_ubxtool.py uses only Python standard library
+#
+# System requirement (install via apt):
+#   sudo apt install gpsd-clients  # provides ubxtool command
+#
+# Tested with ubxtool v3.2 (other versions may work, YMMV)

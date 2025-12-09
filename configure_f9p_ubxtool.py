@@ -319,6 +319,26 @@ def configure_moving_base(port: str):
     log("Moving Base configurada correctamente")
 
 
+def configure_pps_only(port: str, polarity: int = 0):
+    """
+    Configura solo el PPS (Time Pulse) en el receptor.
+    - polarity: 0 = flanco de subida, 1 = flanco invertido
+    """
+    log(f"\n=== Configurando PPS en {port} ===")
+    
+    # Verificar que el puerto responde
+    log("Verificando comunicación...")
+    run_ubxtool(["-p", "MON-VER"], port)
+    
+    # Configurar PPS
+    run_ubxtool(["-z", "CFG-TP-TP1_ENA,1"], port)
+    run_ubxtool(["-z", f"CFG-TP-POL_TP1,{polarity}"], port)
+    
+    # Guardar configuración
+    run_ubxtool(["-p", "SAVE"], port)
+    log(f"PPS configurado correctamente (polarity={polarity})")
+
+
 def configure_rover(port: str):
     """
     Configura el Rover (RV):
@@ -374,9 +394,9 @@ def configure_rover(port: str):
     # Habilitar UBX-NAV-RELPOSNED por USB (heading y baseline)
     run_ubxtool(["-z", "CFG-MSGOUT-UBX_NAV_RELPOSNED_USB,1"], port)
     
-    # PPS invertido (polarity=1) y habilitar TP1
+    # PPS normal (polarity=0) y habilitar TP1
     run_ubxtool(["-z", "CFG-TP-TP1_ENA,1"], port)
-    run_ubxtool(["-z", "CFG-TP-POL_TP1,1"], port)
+    run_ubxtool(["-z", "CFG-TP-POL_TP1,0"], port)
     
     # Guardar configuración
     run_ubxtool(["-p", "SAVE"], port)
@@ -399,8 +419,77 @@ def print_versions():
 # MAIN
 # ------------------------------------------------------------
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Configurador ZED-F9P para Moving-Base RTK",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Ejemplos:
+  # Configurar ambos receptores (autodetección):
+  python configure_f9p_ubxtool.py
+  
+  # Configurar solo Moving Base en puerto específico:
+  python configure_f9p_ubxtool.py --mb-only --port /dev/ttyACM0
+  
+  # Configurar solo Rover en puerto específico:
+  python configure_f9p_ubxtool.py --rover-only --port /dev/ttyACM1
+  
+  # Configurar solo PPS en un puerto:
+  python configure_f9p_ubxtool.py --pps-only --port /dev/ttyACM1 --pps-polarity 0
+        """
+    )
+    
+    parser.add_argument("--mb-only", action="store_true",
+                        help="Configurar solo Moving Base")
+    parser.add_argument("--rover-only", action="store_true",
+                        help="Configurar solo Rover")
+    parser.add_argument("--pps-only", action="store_true",
+                        help="Configurar solo PPS (Time Pulse)")
+    parser.add_argument("--port", type=str,
+                        help="Puerto serial específico (ej: /dev/ttyACM0)")
+    parser.add_argument("--pps-polarity", type=int, choices=[0, 1], default=0,
+                        help="Polaridad del PPS: 0=flanco de subida (default), 1=invertido")
+    
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    
+    # Validar combinaciones de argumentos
+    exclusive_modes = sum([args.mb_only, args.rover_only, args.pps_only])
+    if exclusive_modes > 1:
+        log("Error: Solo puedes especificar uno de: --mb-only, --rover-only, --pps-only")
+        sys.exit(1)
+    
+    if exclusive_modes == 1 and not args.port:
+        log("Error: Debes especificar --port cuando usas --mb-only, --rover-only o --pps-only")
+        sys.exit(1)
+    
     print_versions()
+    
+    # Modo PPS solo
+    if args.pps_only:
+        log(f"=== CONFIGURACIÓN PPS ÚNICAMENTE ===")
+        configure_pps_only(args.port, polarity=args.pps_polarity)
+        log("\nConfiguración PPS finalizada correctamente.")
+        return
+    
+    # Modo Moving Base solo
+    if args.mb_only:
+        log("=== CONFIGURACIÓN MOVING BASE ÚNICAMENTE ===")
+        configure_moving_base(args.port)
+        log("\nConfiguración Moving Base finalizada correctamente.")
+        return
+    
+    # Modo Rover solo
+    if args.rover_only:
+        log("=== CONFIGURACIÓN ROVER ÚNICAMENTE ===")
+        configure_rover(args.port)
+        log("\nConfiguración Rover finalizada correctamente.")
+        return
+    
+    # Modo por defecto: configurar ambos con autodetección
     log("=== CONFIGURACIÓN MB-RTK ZED-F9P ===")
     log("Arquitectura: Moving Base (MB) → RTCM → Rover (RV)")
     log("  MB: emite RTCM, recibe NTRIP (opcional), publica NAV-PVT")
